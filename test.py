@@ -1,5 +1,6 @@
 import time
 import os
+from CompressorTest import GolombRiceEnhanced
 from Compressor import GolombRiceCompressor
 from FileChecker import FileChecker
 import argparse
@@ -10,6 +11,8 @@ if __name__ == "__main__":
     parser.add_argument('--inputfile', required=True, help="Path to the file to check.")
     parser.add_argument('--outputrawfile', required=False, help="Path to the output raw file.")
     parser.add_argument('--outputfile', required=False, help="Path to the output decoded file.")
+    parser.add_argument('--test', required=True, help="Use test compression class or oficial compression class.")
+
     args = parser.parse_args()
 
     # Arg Checks
@@ -25,8 +28,10 @@ if __name__ == "__main__":
     else :
         reco_path    = 'files/recovered.txt'
  
-
-    comp = GolombRiceCompressor()
+    if args.test == 'test':
+        comp = GolombRiceEnhanced()
+    else:
+        comp = GolombRiceCompressor()
 
     # --- Medir compresión ---
     start_c = time.time()

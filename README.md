@@ -1,5 +1,19 @@
 # PracticaCDI
 
+# Ratios actuales
+
+## File11111.txt
+
+
+## File22222.txt
+Original size:   176167.14 kB
+Compressed size: 21489.81 kB
+  -> Compression rate:   2998.62 kB/s
+  -> Decompression rate: 498.77 kB/s
+  -> Compression ratio:   8.20x
+✅ Both rates exceed 250 kB/s requirement.
+The files 'files/file22222.txt' and 'files/recovered.txt' are identical.
+
 ## Descripcion de archivos
 
 ### Carpetas
