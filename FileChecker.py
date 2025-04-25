@@ -21,7 +21,7 @@ class FileChecker:
                 if content1 == content2:
                     print(f"The files '{file1_path}' and '{file2_path}' are identical.")
                 else:
-                    print(f"The files '{file1_path}' and '{file2_path}' are different.")
+                    print(f"The files '{file1_path}' and '{file2_path}' are different😔.")
         except FileNotFoundError as e:
             print(f"Error: {e}")
         except Exception as e:
