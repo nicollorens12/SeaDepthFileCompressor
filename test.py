@@ -1,6 +1,7 @@
 import time
 import os
 from Compressor import GolombRiceCompressor
+from CompressorSol import SolCompressor
 from FileChecker import FileChecker
 import argparse
 
@@ -26,7 +27,9 @@ if __name__ == "__main__":
         reco_path    = 'files/recovered.txt'
  
 
-    comp = GolombRiceCompressor()
+    # comp = GolombRiceCompressor()
+    comp = SolCompressor()
+
 
     # --- Medir compresión ---
     start_c = time.time()

@@ -26,3 +26,42 @@
 
 - Tienen 849 filas
 - Tienen 35001 cotas por fila
+
+## Compresion actual:
+
+### file11111.txt
+Original size:   165083.86 kB
+Compressed size: 28861.74 kB
+  - Compression rate:   4307.52 kB/s
+  - Decompression rate: 938.90 kB/s
+  - Compression ratio:   5.72x
+
+✅ Both rates exceed 250 kB/s requirement.
+
+### file22222.txt
+Original size:   176167.14 kB
+Compressed size: 21489.81 kB
+  - Compression rate:   5556.31 kB/s
+  - Decompression rate: 858.53 kB/s
+  - Compression ratio:   8.20x
+
+✅ Both rates exceed 250 kB/s requirement.
+
+## Compresion test:
+### file11111.txt
+Original size:   165083.86 kB
+Compressed size: 27927.89 kB
+  - Compression rate:   4204.85 kB/s
+  - Decompression rate: 923.87 kB/s
+  - Compression ratio:   5.91x
+
+✅ Both rates exceed 250 kB/s requirement.
+
+### file22222.txt
+Original size:   176167.14 kB
+Compressed size: 21489.81 kB
+  - Compression rate:   5466.34 kB/s
+  - Decompression rate: 881.81 kB/s
+  - Compression ratio:   8.20x
+
+✅ Both rates exceed 250 kB/s requirement.
