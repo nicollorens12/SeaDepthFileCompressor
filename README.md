@@ -50,18 +50,22 @@ Compressed size: 21489.81 kB
 ## Compresion test:
 ### file11111.txt
 Original size:   165083.86 kB
-Compressed size: 27927.89 kB
-  - Compression rate:   4204.85 kB/s
-  - Decompression rate: 923.87 kB/s
-  - Compression ratio:   5.91x
+Compressed size: 26471.17 kB
+  - Compression rate:   4191.21 kB/s
+  - Decompression rate: 863.80 kB/s
+  - Compression ratio:   6.24x
 
 ✅ Both rates exceed 250 kB/s requirement.
+
+✅ The files '.\files\file11111.txt' and 'files/recovered.txt' are identical.
 
 ### file22222.txt
 Original size:   176167.14 kB
-Compressed size: 21489.81 kB
-  - Compression rate:   5466.34 kB/s
-  - Decompression rate: 881.81 kB/s
-  - Compression ratio:   8.20x
+Compressed size: 21357.74 kB
+  - Compression rate:   4989.64 kB/s
+  - Decompression rate: 719.20 kB/s
+  - Compression ratio:   8.25x
 
 ✅ Both rates exceed 250 kB/s requirement.
+
+✅ The files '.\files\file22222.txt' and 'files/recovered.txt' are identical.
