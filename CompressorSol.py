@@ -52,15 +52,15 @@ class BitReader:
 
 class SolCompressor:
     """
-    Golomb-Rice compressor with optional run-length encoding of zero-symbols.
-    Switches to plain Golomb-Rice if no long zero runs are detected.
+    Golomb-Rice compressor with optional run-length encoding of zero-symbols
+    and second-order (delta-of-delta) coding for better compression ratio.
     """
     MAGIC = b'HTZR'
-    RLE_THRESHOLD_FACTOR = 4  # multiplier for minimal run length: run >= factor*2^k
+    RLE_THRESHOLD_FACTOR = 4  # minimal run = factor * 2^k
 
     def __init__(self, k=None, min_run=None):
-        self.k = k  # explicit k or None to auto-choose
-        self.min_run = min_run  # override minimal run threshold
+        self.k = k
+        self.min_run = min_run
 
     @staticmethod
     def zigzag_encode(n):
@@ -75,94 +75,82 @@ class SolCompressor:
         return max(0, int(round(math.log2(mean + 1))))
 
     def compress_file(self, infile_path, outfile_path):
-        # Read heights and line breaks
+        # Read heights
         with open(infile_path, 'r') as f:
             lines = f.readlines()
-
-        all_heights, line_breaks = [], []
-        counter = 0
+        heights = []
+        line_breaks = []
+        count = 0
         for line in lines:
             nums = [int(x) for x in line.split()]
-            all_heights.extend(nums)
-            counter += len(nums)
-            line_breaks.append(counter)
-
-        if not all_heights:
+            heights.extend(nums)
+            count += len(nums)
+            line_breaks.append(count)
+        if not heights:
             raise ValueError("Input file is empty")
 
-        n = len(all_heights)
-        deltas = [all_heights[0]] + [all_heights[i] - all_heights[i-1] for i in range(1, n)]
-        zs = [self.zigzag_encode(d) for d in deltas]
+        n = len(heights)
+        # First-order deltas
+        d1 = [heights[i] - heights[i-1] for i in range(1, n)]  # length n-1
+        # Second-order deltas (delta-of-delta)
+        d2 = [d1[0]] + [d1[i] - d1[i-1] for i in range(1, len(d1))]
+        # ZigZag encode
+        zs = [self.zigzag_encode(d) for d in d2]  # length n-1
 
-        # Determine k
-        k = self.k if self.k is not None else self.choose_k(zs[1:])
-        # Determine minimal run threshold
+        # Choose k
+        k = self.k if self.k is not None else self.choose_k(zs)
+        # Determine RLE threshold
         min_run = self.min_run if self.min_run is not None else (self.RLE_THRESHOLD_FACTOR << k)
-
-        # Scan for long zero-runs
-        longest_run = 0
-        run = 0
-        for z in zs[1:]:
+        # Detect longest zero-run
+        longest = run = 0
+        for z in zs:
             if z == 0:
                 run += 1
-                longest_run = max(longest_run, run)
+                longest = max(longest, run)
             else:
                 run = 0
-        use_rle = (longest_run >= min_run)
+        use_rle = (longest >= min_run)
 
+        # Write header
         with open(outfile_path, 'wb') as out:
-            # Header: MAGIC, count, h0, k, rle_flag, num_lines, line_breaks...
             out.write(self.MAGIC)
-            out.write(struct.pack('<I', n))
-            out.write(struct.pack('<i', all_heights[0]))
-            out.write(struct.pack('B', k))
+            out.write(struct.pack('<I', n))            # number of samples
+            out.write(struct.pack('<i', heights[0]))  # h0
+            out.write(struct.pack('B', k))            # parameter k
             out.write(struct.pack('B', 1 if use_rle else 0))
             out.write(struct.pack('<I', len(line_breaks)))
             for pos in line_breaks:
                 out.write(struct.pack('<I', pos))
 
             writer = BitWriter(out)
-            if not use_rle:
-                # Plain Golomb-Rice
-                for z in zs[1:]:
-                    q = z >> k
-                    r = z & ((1 << k) - 1)
-                    for _ in range(q): writer.write_bit(1)
-                    writer.write_bit(0)
-                    if k > 0:
-                        writer.write_bits(r, k)
-                writer.flush()
-                return
-
-            # RLE-enabled encoding
-            i = 1
-            while i < len(zs):
-                if zs[i] == 0:
-                    # Count zero-run
+            # Encode symbols
+            idx = 0
+            while idx < len(zs):
+                if use_rle and zs[idx] == 0:
+                    # run-length
                     run = 1
-                    while i + run < len(zs) and zs[i + run] == 0:
+                    while idx+run < len(zs) and zs[idx+run] == 0:
                         run += 1
                     if run >= min_run:
-                        # Token: zero-run
+                        # write zero-run token
                         writer.write_bit(0)
                         q = run >> k
                         r = run & ((1 << k) - 1)
                         for _ in range(q): writer.write_bit(1)
                         writer.write_bit(0)
-                        if k > 0:
-                            writer.write_bits(r, k)
-                        i += run
+                        if k>0: writer.write_bits(r, k)
+                        idx += run
                         continue
-                # Raw single symbol
-                writer.write_bit(1)
-                z = zs[i]
+                # raw symbol (flag=1)
+                if use_rle:
+                    writer.write_bit(1)
+                z = zs[idx]
                 q = z >> k
-                r = z & ((1 << k) - 1)
+                r = z & ((1<<k) - 1)
                 for _ in range(q): writer.write_bit(1)
                 writer.write_bit(0)
-                if k > 0:
-                    writer.write_bits(r, k)
-                i += 1
+                if k>0: writer.write_bits(r, k)
+                idx += 1
             writer.flush()
 
     def decompress_file(self, infile_path, outfile_path):
@@ -172,43 +160,44 @@ class SolCompressor:
                 raise ValueError("Not a HTZR-compressed file")
             n = struct.unpack('<I', inp.read(4))[0]
             h0 = struct.unpack('<i', inp.read(4))[0]
-            k = struct.unpack('B', inp.read(1))[0]
+            k = inp.read(1)[0]
             use_rle = bool(inp.read(1)[0])
             num_lines = struct.unpack('<I', inp.read(4))[0]
             line_breaks = [struct.unpack('<I', inp.read(4))[0] for _ in range(num_lines)]
 
             reader = BitReader(inp)
-            heights = [h0]
-            if not use_rle:
-                # Plain decode
-                for _ in range(n-1):
-                    q = 0
-                    while reader.read_bit(): q += 1
-                    # unary stop bit consumed as 0
-                    r = reader.read_bits(k) if k > 0 else 0
-                    z = (q << k) | r
-                    d = self.zigzag_decode(z)
-                    heights.append(heights[-1] + d)
-            else:
-                # RLE decode
-                while len(heights) < n:
-                    pbit = reader.read_bit()
-                    if pbit == 0:
-                        # zero-run token
+            zs = []  # recovered zigzag values
+            while len(zs) < n-1:
+                if use_rle:
+                    flag = reader.read_bit()
+                    if flag == 0:
+                        # zero-run
                         q = 0
                         while reader.read_bit(): q += 1
-                        r = reader.read_bits(k) if k > 0 else 0
-                        run = (q << k) | r
-                        heights.extend([heights[-1]] * run)
-                    else:
-                        q = 0
-                        while reader.read_bit(): q += 1
-                        r = reader.read_bits(k) if k > 0 else 0
-                        z = (q << k) | r
-                        d = self.zigzag_decode(z)
-                        heights.append(heights[-1] + d)
+                        r = reader.read_bits(k) if k>0 else 0
+                        run = (q<<k) | r
+                        zs.extend([0]*run)
+                        continue
+                # raw symbol or non-RLE
+                # if non-RLE, previous bit is part of unary
+                q = 0
+                while reader.read_bit(): q += 1
+                r = reader.read_bits(k) if k>0 else 0
+                zs.append((q<<k) | r)
 
-        # Write back with original line breaks
+        # Recover deltas
+        # d2 = decoded ZigZag values
+        d2 = [self.zigzag_decode(z) for z in zs]
+        # recover d1 (length n-1)
+        d1 = [d2[0]]
+        for i in range(1, len(d2)):
+            d1.append(d2[i] + d1[i-1])
+        # recover heights
+        heights = [h0]
+        for delta in d1:
+            heights.append(heights[-1] + delta)
+
+        # write output
         with open(outfile_path, 'w') as out:
             start = 0
             for end in line_breaks:
@@ -216,6 +205,6 @@ class SolCompressor:
                 start = end
 
 # Example usage:
-# comp = GolombRiceCompressorRLE()
+# comp = SolCompressor()
 # comp.compress_file('ShortFile111111.txt', 'out.bin')
 # comp.decompress_file('out.bin', 'recovered.txt')
