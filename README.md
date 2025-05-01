@@ -72,9 +72,10 @@ Compressed size: 21489.81 kB
 Compression and decompression completed successfully.
 Original size:   165083.86 kB
 Compressed size: 26121.39 kB
-  -> Compression rate:   2315.17 kB/s
-  -> Decompression rate: 494.15 kB/s
-  -> Compression ratio:   6.32x
+  - Compression rate:   2315.17 kB/s
+  - Decompression rate: 494.15 kB/s
+  - Compression ratio:   6.32x
+
 ✅ Both rates exceed 250 kB/s requirement.
 The files 'files/file11111.txt' and 'files/recovered.txt' are identical.
 
@@ -82,8 +83,32 @@ The files 'files/file11111.txt' and 'files/recovered.txt' are identical.
 Compression and decompression completed successfully.
 Original size:   176167.14 kB
 Compressed size: 19684.78 kB
-  -> Compression rate:   3054.77 kB/s
-  -> Decompression rate: 458.33 kB/s
-  -> Compression ratio:   8.95x
+  - Compression rate:   3054.77 kB/s
+  - Decompression rate: 458.33 kB/s
+  - Compression ratio:   8.95x
+  
+✅ Both rates exceed 250 kB/s requirement.
+The files 'files/file22222.txt' and 'files/recovered.txt' are identical.
+
+## Compresion second-order deltas + ZigZag + Elias-gamma coding + canonical Huffman
+### file11111.txt
+Compression and decompression completed successfully.
+Original size:   165083.86 kB
+Compressed size: 21433.07 kB
+  - Compression rate:   4208.15 kB/s
+  - Decompression rate: 498.48 kB/s
+  - Compression ratio:   7.70x
+
+✅ Both rates exceed 250 kB/s requirement.
+The files 'files/file11111.txt' and 'files/recovered.txt' are identical.
+
+### file22222.txt
+Compression and decompression completed successfully.
+Original size:   176167.14 kB
+Compressed size: 21141.94 kB
+  - Compression rate:   4521.32 kB/s
+  - Decompression rate: 477.60 kB/s
+  - Compression ratio:   8.33x
+
 ✅ Both rates exceed 250 kB/s requirement.
 The files 'files/file22222.txt' and 'files/recovered.txt' are identical.

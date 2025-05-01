@@ -19,7 +19,7 @@ class FileChecker:
                 content1 = file1.read()
                 content2 = file2.read()
                 if content1 == content2:
-                    print(f"The files '{file1_path}' and '{file2_path}' are identical.")
+                    print(f"The files '{file1_path}' and '{file2_path}' are identical.✅")
                 else:
                     print(f"The files '{file1_path}' and '{file2_path}' are different.❌")
                     print(f"Same line jumps:' {self.count_line_jumps(file1_path)} vs {self.count_line_jumps(file2_path)}")

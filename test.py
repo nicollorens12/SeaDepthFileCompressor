@@ -53,9 +53,9 @@ if __name__ == "__main__":
     print("Compression and decompression completed successfully.")
     print(f"Original size:   {size_orig/1024:.2f} kB")
     print(f"Compressed size: {size_comp/1024:.2f} kB")
-    print(f"  -> Compression rate:   {rate_c:.2f} kB/s")
-    print(f"  -> Decompression rate: {rate_d:.2f} kB/s")
-    print(f"  -> Compression ratio:   {size_orig/size_comp:.2f}x")
+    print(f"  - Compression rate:   {rate_c:.2f} kB/s")
+    print(f"  - Decompression rate: {rate_d:.2f} kB/s")
+    print(f"  - Compression ratio:   {size_orig/size_comp:.2f}x")
 
     if rate_c >= 250 and rate_d >= 250:
         print("✅ Both rates exceed 250 kB/s requirement.")
