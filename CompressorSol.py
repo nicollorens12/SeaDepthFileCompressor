@@ -1,5 +1,6 @@
 import struct
-import math
+import heapq
+from collections import Counter
 
 class BitWriter:
     def __init__(self, file):
@@ -7,21 +8,19 @@ class BitWriter:
         self.accumulator = 0
         self.bits_filled = 0
 
-    def write_bit(self, bit):
-        if bit not in (0, 1):
-            raise ValueError("Bit must be 0 or 1")
-        self.accumulator = (self.accumulator << 1) | bit
+    def write_bit(self, bit: int) -> None:
+        self.accumulator = ((self.accumulator << 1) & 0xFF) | (bit & 1)
         self.bits_filled += 1
         if self.bits_filled == 8:
             self.file.write(bytes((self.accumulator,)))
             self.accumulator = 0
             self.bits_filled = 0
 
-    def write_bits(self, value, count):
-        for i in reversed(range(count)):
-            self.write_bit((value >> i) & 1)
+    def write_bits(self, bits: str) -> None:
+        for b in bits:
+            self.write_bit(int(b))
 
-    def flush(self):
+    def flush(self) -> None:
         if self.bits_filled > 0:
             self.accumulator <<= (8 - self.bits_filled)
             self.file.write(bytes((self.accumulator,)))
@@ -34,188 +33,151 @@ class BitReader:
         self.accumulator = 0
         self.bits_remaining = 0
 
-    def read_bit(self):
+    def read_bit(self) -> int:
         if self.bits_remaining == 0:
             byte = self.file.read(1)
             if not byte:
-                raise EOFError("No more bits to read")
+                raise EOFError("Unexpected EOF in bitstream")
             self.accumulator = byte[0]
             self.bits_remaining = 8
         self.bits_remaining -= 1
         return (self.accumulator >> self.bits_remaining) & 1
 
-    def read_bits(self, count):
-        value = 0
+    def read_bits(self, count: int) -> int:
+        val = 0
         for _ in range(count):
-            value = (value << 1) | self.read_bit()
-        return value
+            val = (val << 1) | self.read_bit()
+        return val
 
-class SolCompressor:
-    """
-    Golomb-Rice compressor with optional run-length encoding of zero-symbols.
-    Switches to plain Golomb-Rice if no long zero runs are detected.
-    """
-    MAGIC = b'HTZR'
-    RLE_THRESHOLD_FACTOR = 4  # multiplier for minimal run length: run >= factor*2^k
+class HuffmanNode:
+    def __init__(self, symbol=None, freq=0):
+        self.symbol = symbol
+        self.freq = freq
+        self.left = None
+        self.right = None
+    def __lt__(self, other):
+        return self.freq < other.freq
 
-    def __init__(self, k=None, min_run=None):
-        self.k = k  # explicit k or None to auto-choose
-        self.min_run = min_run  # override minimal run threshold
+class HuffmanCompressor:
+    """
+    Compressor tailored for sea-height files with line breaks:
+    - Deltas + zigzag
+    - Huffman coding of non-negative symbols
+    - Header includes line break positions for exact round-trip
+    """
+    MAGIC = b'HFMR'
 
     @staticmethod
-    def zigzag_encode(n):
+    def zigzag_encode(n: int) -> int:
         return (n << 1) ^ (n >> 31)
 
     @staticmethod
-    def zigzag_decode(z):
+    def zigzag_decode(z: int) -> int:
         return (z >> 1) ^ -(z & 1)
 
-    def choose_k(self, values):
-        mean = sum(values) / len(values) if values else 0
-        return max(0, int(round(math.log2(mean + 1))))
+    def build_tree(self, freqs: Counter) -> HuffmanNode:
+        heap = [HuffmanNode(sym, fr) for sym, fr in freqs.items()]
+        heapq.heapify(heap)
+        while len(heap) > 1:
+            a = heapq.heappop(heap)
+            b = heapq.heappop(heap)
+            parent = HuffmanNode(freq=a.freq + b.freq)
+            parent.left, parent.right = a, b
+            heapq.heappush(heap, parent)
+        return heap[0]
 
-    def compress_file(self, infile_path, outfile_path):
-        # Read heights and line breaks
-        with open(infile_path, 'r') as f:
-            lines = f.readlines()
+    def gen_codes(self, node: HuffmanNode, prefix: str, table: dict) -> None:
+        if node.symbol is not None:
+            table[node.symbol] = prefix
+        else:
+            self.gen_codes(node.left, prefix + '0', table)
+            self.gen_codes(node.right, prefix + '1', table)
 
-        all_heights, line_breaks = [], []
-        counter = 0
-        for line in lines:
-            nums = [int(x) for x in line.split()]
-            all_heights.extend(nums)
-            counter += len(nums)
-            line_breaks.append(counter)
+    def write_tree(self, node: HuffmanNode, writer: BitWriter) -> None:
+        if node.symbol is None:
+            writer.write_bit(0)
+            self.write_tree(node.left, writer)
+            self.write_tree(node.right, writer)
+        else:
+            writer.write_bit(1)
+            writer.write_bits(f'{node.symbol:032b}')
 
-        if not all_heights:
-            raise ValueError("Input file is empty")
+    def read_tree(self, reader: BitReader) -> HuffmanNode:
+        bit = reader.read_bit()
+        if bit == 1:
+            sym = reader.read_bits(32)
+            return HuffmanNode(symbol=sym)
+        node = HuffmanNode()
+        node.left = self.read_tree(reader)
+        node.right = self.read_tree(reader)
+        return node
 
-        n = len(all_heights)
-        deltas = [all_heights[0]] + [all_heights[i] - all_heights[i-1] for i in range(1, n)]
+    def compress_file(self, infile: str, outfile: str) -> None:
+        # Read input, record line breaks
+        values = []
+        line_breaks = []
+        count = 0
+        with open(infile, 'r') as f:
+            for line in f:
+                nums = [int(x) for x in line.split()]
+                values.extend(nums)
+                count += len(nums)
+                line_breaks.append(count)
+        if not values:
+            raise ValueError("Empty input file")
+        # Deltas + zigzag
+        deltas = [values[0]] + [values[i] - values[i-1] for i in range(1, len(values))]
         zs = [self.zigzag_encode(d) for d in deltas]
-
-        # Determine k
-        k = self.k if self.k is not None else self.choose_k(zs[1:])
-        # Determine minimal run threshold
-        min_run = self.min_run if self.min_run is not None else (self.RLE_THRESHOLD_FACTOR << k)
-
-        # Scan for long zero-runs
-        longest_run = 0
-        run = 0
-        for z in zs[1:]:
-            if z == 0:
-                run += 1
-                longest_run = max(longest_run, run)
-            else:
-                run = 0
-        use_rle = (longest_run >= min_run)
-
-        with open(outfile_path, 'wb') as out:
-            # Header: MAGIC, count, h0, k, rle_flag, num_lines, line_breaks...
-            out.write(self.MAGIC)
-            out.write(struct.pack('<I', n))
-            out.write(struct.pack('<i', all_heights[0]))
-            out.write(struct.pack('B', k))
-            out.write(struct.pack('B', 1 if use_rle else 0))
-            out.write(struct.pack('<I', len(line_breaks)))
-            for pos in line_breaks:
-                out.write(struct.pack('<I', pos))
-
+        # Build Huffman on zs[1:]
+        freqs = Counter(zs[1:])
+        tree = self.build_tree(freqs)
+        codes = {}
+        self.gen_codes(tree, '', codes)
+        # Write
+        with open(outfile, 'wb') as out:
             writer = BitWriter(out)
-            if not use_rle:
-                # Plain Golomb-Rice
-                for z in zs[1:]:
-                    q = z >> k
-                    r = z & ((1 << k) - 1)
-                    for _ in range(q): writer.write_bit(1)
-                    writer.write_bit(0)
-                    if k > 0:
-                        writer.write_bits(r, k)
-                writer.flush()
-                return
-
-            # RLE-enabled encoding
-            i = 1
-            while i < len(zs):
-                if zs[i] == 0:
-                    # Count zero-run
-                    run = 1
-                    while i + run < len(zs) and zs[i + run] == 0:
-                        run += 1
-                    if run >= min_run:
-                        # Token: zero-run
-                        writer.write_bit(0)
-                        q = run >> k
-                        r = run & ((1 << k) - 1)
-                        for _ in range(q): writer.write_bit(1)
-                        writer.write_bit(0)
-                        if k > 0:
-                            writer.write_bits(r, k)
-                        i += run
-                        continue
-                # Raw single symbol
-                writer.write_bit(1)
-                z = zs[i]
-                q = z >> k
-                r = z & ((1 << k) - 1)
-                for _ in range(q): writer.write_bit(1)
-                writer.write_bit(0)
-                if k > 0:
-                    writer.write_bits(r, k)
-                i += 1
+            out.write(self.MAGIC)
+            out.write(struct.pack('<I', len(values)))       # total symbols
+            out.write(struct.pack('<i', values[0]))         # h0
+            out.write(struct.pack('<I', len(line_breaks)))  # num lines
+            for pos in line_breaks:
+                out.write(struct.pack('<I', pos))            # each break
+            # tree and data
+            self.write_tree(tree, writer)
+            # encode data symbols zs[1:]
+            for z in zs[1:]:
+                writer.write_bits(codes[z])
             writer.flush()
 
-    def decompress_file(self, infile_path, outfile_path):
-        with open(infile_path, 'rb') as inp:
+    def decompress_file(self, infile: str, outfile: str) -> None:
+        with open(infile, 'rb') as inp:
             magic = inp.read(4)
             if magic != self.MAGIC:
-                raise ValueError("Not a HTZR-compressed file")
+                raise ValueError("Not a HFMR file")
             n = struct.unpack('<I', inp.read(4))[0]
             h0 = struct.unpack('<i', inp.read(4))[0]
-            k = struct.unpack('B', inp.read(1))[0]
-            use_rle = bool(inp.read(1)[0])
             num_lines = struct.unpack('<I', inp.read(4))[0]
             line_breaks = [struct.unpack('<I', inp.read(4))[0] for _ in range(num_lines)]
-
             reader = BitReader(inp)
-            heights = [h0]
-            if not use_rle:
-                # Plain decode
-                for _ in range(n-1):
-                    q = 0
-                    while reader.read_bit(): q += 1
-                    # unary stop bit consumed as 0
-                    r = reader.read_bits(k) if k > 0 else 0
-                    z = (q << k) | r
-                    d = self.zigzag_decode(z)
-                    heights.append(heights[-1] + d)
-            else:
-                # RLE decode
-                while len(heights) < n:
-                    pbit = reader.read_bit()
-                    if pbit == 0:
-                        # zero-run token
-                        q = 0
-                        while reader.read_bit(): q += 1
-                        r = reader.read_bits(k) if k > 0 else 0
-                        run = (q << k) | r
-                        heights.extend([heights[-1]] * run)
-                    else:
-                        q = 0
-                        while reader.read_bit(): q += 1
-                        r = reader.read_bits(k) if k > 0 else 0
-                        z = (q << k) | r
-                        d = self.zigzag_decode(z)
-                        heights.append(heights[-1] + d)
-
-        # Write back with original line breaks
-        with open(outfile_path, 'w') as out:
+            tree = self.read_tree(reader)
+            # decode n-1 symbols into deltas
+            zs = []
+            node = tree
+            while len(zs) < n-1:
+                bit = reader.read_bit()
+                node = node.right if bit else node.left
+                if node.symbol is not None:
+                    zs.append(node.symbol)
+                    node = tree
+            # reconstruct values
+            vals = [h0]
+            for z in zs:
+                d = self.zigzag_decode(z)
+                vals.append(vals[-1] + d)
+        # write lines
+        with open(outfile, 'w') as out:
             start = 0
-            for end in line_breaks:
-                out.write(' '.join(str(h) for h in heights[start:end]) + '\n')
-                start = end
-
-# Example usage:
-# comp = GolombRiceCompressorRLE()
-# comp.compress_file('ShortFile111111.txt', 'out.bin')
-# comp.decompress_file('out.bin', 'recovered.txt')
+            for br in line_breaks:
+                line = vals[start:br]
+                out.write(' '.join(str(x) for x in line) + '\n')
+                start = br
