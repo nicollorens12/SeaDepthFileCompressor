@@ -1,4 +1,5 @@
 import struct
+import math
 import heapq
 from collections import Counter
 
@@ -49,23 +50,14 @@ class BitReader:
             val = (val << 1) | self.read_bit()
         return val
 
-class HuffmanNode:
-    def __init__(self, symbol=None, freq=0):
-        self.symbol = symbol
-        self.freq = freq
-        self.left = None
-        self.right = None
-    def __lt__(self, other):
-        return self.freq < other.freq
-
-class HuffmanCompressor:
+class SolCompressor:
     """
-    Compressor tailored for sea-height files with line breaks:
-    - Deltas + zigzag
-    - Huffman coding of non-negative symbols
-    - Header includes line break positions for exact round-trip
+    Compressor combining:
+      - Second-order delta-of-delta + ZigZag
+      - Zero-run RLE with Elias gamma coding
+      - Canonical Huffman coding of final symbol stream
     """
-    MAGIC = b'HFMR'
+    MAGIC = b'ENHC'
 
     @staticmethod
     def zigzag_encode(n: int) -> int:
@@ -75,109 +67,142 @@ class HuffmanCompressor:
     def zigzag_decode(z: int) -> int:
         return (z >> 1) ^ -(z & 1)
 
-    def build_tree(self, freqs: Counter) -> HuffmanNode:
-        heap = [HuffmanNode(sym, fr) for sym, fr in freqs.items()]
-        heapq.heapify(heap)
-        while len(heap) > 1:
-            a = heapq.heappop(heap)
-            b = heapq.heappop(heap)
-            parent = HuffmanNode(freq=a.freq + b.freq)
-            parent.left, parent.right = a, b
-            heapq.heappush(heap, parent)
-        return heap[0]
+    @staticmethod
+    def gamma_encode(n: int) -> str:
+        # Elias gamma for n>=1
+        b = bin(n)[2:]
+        return '0'*(len(b)-1) + b
 
-    def gen_codes(self, node: HuffmanNode, prefix: str, table: dict) -> None:
-        if node.symbol is not None:
-            table[node.symbol] = prefix
-        else:
-            self.gen_codes(node.left, prefix + '0', table)
-            self.gen_codes(node.right, prefix + '1', table)
+    @staticmethod
+    def gamma_decode(reader: BitReader) -> int:
+        zeros = 0
+        while reader.read_bit() == 0:
+            zeros += 1
+        val = 1 << zeros
+        for i in range(zeros):
+            val |= reader.read_bit() << (zeros - 1 - i)
+        return val
 
-    def write_tree(self, node: HuffmanNode, writer: BitWriter) -> None:
-        if node.symbol is None:
-            writer.write_bit(0)
-            self.write_tree(node.left, writer)
-            self.write_tree(node.right, writer)
-        else:
-            writer.write_bit(1)
-            writer.write_bits(f'{node.symbol:032b}')
-
-    def read_tree(self, reader: BitReader) -> HuffmanNode:
-        bit = reader.read_bit()
-        if bit == 1:
-            sym = reader.read_bits(32)
-            return HuffmanNode(symbol=sym)
-        node = HuffmanNode()
-        node.left = self.read_tree(reader)
-        node.right = self.read_tree(reader)
-        return node
-
-    def compress_file(self, infile: str, outfile: str) -> None:
-        # Read input, record line breaks
-        values = []
-        line_breaks = []
-        count = 0
+    def compress_file(self, infile: str, outfile: str, rle_threshold: int = 4) -> None:
+        # Read values and line breaks
+        vals = []
+        breaks = []
+        idx = 0
         with open(infile, 'r') as f:
             for line in f:
                 nums = [int(x) for x in line.split()]
-                values.extend(nums)
-                count += len(nums)
-                line_breaks.append(count)
-        if not values:
+                vals.extend(nums)
+                idx += len(nums)
+                breaks.append(idx)
+        if not vals:
             raise ValueError("Empty input file")
-        # Deltas + zigzag
-        deltas = [values[0]] + [values[i] - values[i-1] for i in range(1, len(values))]
-        zs = [self.zigzag_encode(d) for d in deltas]
-        # Build Huffman on zs[1:]
-        freqs = Counter(zs[1:])
-        tree = self.build_tree(freqs)
+        n = len(vals)
+        # First and second-order deltas
+        d1 = [vals[i] - vals[i-1] for i in range(1, n)]
+        d2 = [d1[0]] + [d1[i] - d1[i-1] for i in range(1, len(d1))]
+        zs = [self.zigzag_encode(d) for d in d2]
+        # Prepare RLE symbol and streams
+        RLE_SYM = max(zs) + 1
+        sym_stream = []
+        run_lengths = []
+        i = 0
+        while i < len(zs):
+            if zs[i] == 0:
+                run = 1
+                while i+run < len(zs) and zs[i+run] == 0:
+                    run += 1
+                if run >= rle_threshold:
+                    sym_stream.append(RLE_SYM)
+                    run_lengths.append(run)
+                    i += run
+                    continue
+            sym_stream.append(zs[i])
+            i += 1
+        # Build canonical Huffman codes
+        freqs = Counter(sym_stream)
+        total = sum(freqs.values())
+        lengths = {sym: max(1, int(math.ceil(-math.log(freq/total, 2))))
+                   for sym, freq in freqs.items()}
+        sorted_syms = sorted(lengths.items(), key=lambda x: (x[1], x[0]))
         codes = {}
-        self.gen_codes(tree, '', codes)
-        # Write
+        code = 0
+        prev_len = sorted_syms[0][1]
+        for sym, length in sorted_syms:
+            code <<= (length - prev_len)
+            codes[sym] = format(code, f'0{length}b')
+            code += 1
+            prev_len = length
+        # Write header, symbol table, then data
         with open(outfile, 'wb') as out:
-            writer = BitWriter(out)
             out.write(self.MAGIC)
-            out.write(struct.pack('<I', len(values)))       # total symbols
-            out.write(struct.pack('<i', values[0]))         # h0
-            out.write(struct.pack('<I', len(line_breaks)))  # num lines
-            for pos in line_breaks:
-                out.write(struct.pack('<I', pos))            # each break
-            # tree and data
-            self.write_tree(tree, writer)
-            # encode data symbols zs[1:]
-            for z in zs[1:]:
-                writer.write_bits(codes[z])
+            out.write(struct.pack('<I', n))
+            out.write(struct.pack('<i', vals[0]))
+            out.write(struct.pack('<I', len(breaks)))
+            for b in breaks:
+                out.write(struct.pack('<I', b))
+            out.write(struct.pack('<I', len(lengths)))
+            for sym, length in lengths.items():
+                out.write(struct.pack('<I', sym))
+                out.write(struct.pack('B', length))
+            writer = BitWriter(out)
+            rl_idx = 0
+            for sym in sym_stream:
+                writer.write_bits(codes[sym])
+                if sym == RLE_SYM:
+                    writer.write_bits(self.gamma_encode(run_lengths[rl_idx]))
+                    rl_idx += 1
             writer.flush()
 
     def decompress_file(self, infile: str, outfile: str) -> None:
         with open(infile, 'rb') as inp:
-            magic = inp.read(4)
-            if magic != self.MAGIC:
-                raise ValueError("Not a HFMR file")
+            if inp.read(4) != self.MAGIC:
+                raise ValueError("Not an ENHC file")
             n = struct.unpack('<I', inp.read(4))[0]
             h0 = struct.unpack('<i', inp.read(4))[0]
-            num_lines = struct.unpack('<I', inp.read(4))[0]
-            line_breaks = [struct.unpack('<I', inp.read(4))[0] for _ in range(num_lines)]
+            nb = struct.unpack('<I', inp.read(4))[0]
+            breaks = [struct.unpack('<I', inp.read(4))[0] for _ in range(nb)]
+            st_count = struct.unpack('<I', inp.read(4))[0]
+            lengths = {struct.unpack('<I', inp.read(4))[0]: inp.read(1)[0]
+                       for _ in range(st_count)}
+            sorted_syms = sorted(lengths.items(), key=lambda x: (x[1], x[0]))
+            rev = {}
+            code = 0
+            prev_len = sorted_syms[0][1]
+            for sym, length in sorted_syms:
+                code <<= (length - prev_len)
+                rev[format(code, f'0{length}b')] = sym
+                code += 1
+                prev_len = length
             reader = BitReader(inp)
-            tree = self.read_tree(reader)
-            # decode n-1 symbols into deltas
             zs = []
-            node = tree
+            buf = ''
+            RLE_SYM = max(lengths)  # assume the largest symbol is RLE
             while len(zs) < n-1:
-                bit = reader.read_bit()
-                node = node.right if bit else node.left
-                if node.symbol is not None:
-                    zs.append(node.symbol)
-                    node = tree
-            # reconstruct values
-            vals = [h0]
-            for z in zs:
-                d = self.zigzag_decode(z)
-                vals.append(vals[-1] + d)
-        # write lines
+                buf += str(reader.read_bit())
+                if buf in rev:
+                    sym = rev[buf]
+                    buf = ''
+                    if sym == RLE_SYM:
+                        run = self.gamma_decode(reader)
+                        zs.extend([0]*run)
+                    else:
+                        zs.append(sym)
+        # Invert transforms
+        d2 = [self.zigzag_decode(z) for z in zs]
+        d1 = [d2[0]]
+        for i in range(1, len(d2)):
+            d1.append(d2[i] + d1[i-1])
+        vals = [h0]
+        for d in d1:
+            vals.append(vals[-1] + d)
+        # Write output
         with open(outfile, 'w') as out:
             start = 0
-            for br in line_breaks:
-                line = vals[start:br]
-                out.write(' '.join(str(x) for x in line) + '\n')
-                start = br
+            for b in breaks:
+                out.write(' '.join(str(x) for x in vals[start:b]) + '\n')
+                start = b
+
+# Usage example:
+# comp = EnhancedCompressor()
+# comp.compress_file('in.txt','out.bin')
+# comp.decompress_file('out.bin','out.txt')

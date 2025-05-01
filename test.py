@@ -1,7 +1,7 @@
 import time
 import os
 from Compressor import GolombRiceCompressor
-from CompressorSol import HuffmanCompressor
+from CompressorSol import SolCompressor
 from FileChecker import FileChecker
 import argparse
 
@@ -28,7 +28,7 @@ if __name__ == "__main__":
  
 
     # comp = GolombRiceCompressor()
-    comp = HuffmanCompressor()
+    comp = SolCompressor()
 
 
     # --- Medir compresión ---
