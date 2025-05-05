@@ -8,8 +8,10 @@ Este script `compress.py` permite **comprimir** y **descomprimir** archivos de t
 python3 compress.py infile outfile
 ````
 
-* Si `infile` termina en `.txt`, se asume que es un archivo original → **se comprime** a `outfile` (por ejemplo, `.bin`).
-* Si `infile` termina en `.bin`, se asume que es un archivo comprimido → **se descomprime** a `outfile` (por ejemplo, `.txt`).
+El script **detecta automáticamente** si el archivo de entrada está comprimido leyendo su cabecera:
+
+* Si el archivo comienza con la firma `ENHC`, se **descomprime**.
+* En caso contrario, se **comprime**.
 
 ## Ejemplos
 

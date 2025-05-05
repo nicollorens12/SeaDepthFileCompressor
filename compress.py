@@ -202,25 +202,15 @@ def main():
 
     compressor = Compressor()
 
-    if infile.endswith('.txt'):
-        print("-> Modo compresión")
-        start = time.time()
-        compressor.compress_file(infile, outfile)
-        end = time.time()
+    try:
+        with open(infile, 'rb') as f:
+            magic = f.read(4)
+        is_compressed = magic == Compressor.MAGIC
+    except Exception as e:
+        print(f"Error al leer el archivo: {e}")
+        sys.exit(1)
 
-        size_in = os.path.getsize(infile)
-        size_out = os.path.getsize(outfile)
-        elapsed = end - start
-        ratio = size_in / size_out if size_out != 0 else float('inf')
-        speed = (size_in / 1024) / elapsed
-
-        print(f"- Compresión completada en {elapsed:.2f} s")
-        print(f"- Tamaño original:   {size_in/1024:.2f} kB")
-        print(f"- Tamaño comprimido: {size_out/1024:.2f} kB")
-        print(f"- Ratio de compresión: {ratio:.2f}x")
-        print(f"- Velocidad: {speed:.2f} kB/s")
-
-    elif infile.endswith('.bin'):
+    if is_compressed:
         print("-> Modo descompresión")
         start = time.time()
         compressor.decompress_file(infile, outfile)
@@ -237,8 +227,22 @@ def main():
         print(f"- Velocidad: {speed:.2f} kB/s")
 
     else:
-        print("Error: el archivo debe terminar en .txt o .bin")
-        sys.exit(1)
+        print("-> Modo compresión")
+        start = time.time()
+        compressor.compress_file(infile, outfile)
+        end = time.time()
+
+        size_in = os.path.getsize(infile)
+        size_out = os.path.getsize(outfile)
+        elapsed = end - start
+        ratio = size_in / size_out if size_out != 0 else float('inf')
+        speed = (size_in / 1024) / elapsed
+
+        print(f"- Compresión completada en {elapsed:.2f} s")
+        print(f"- Tamaño original:   {size_in/1024:.2f} kB")
+        print(f"- Tamaño comprimido: {size_out/1024:.2f} kB")
+        print(f"- Ratio de compresión: {ratio:.2f}x")
+        print(f"- Velocidad: {speed:.2f} kB/s")
 
 if __name__ == '__main__':
     main()
