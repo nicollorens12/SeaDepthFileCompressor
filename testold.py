@@ -1,6 +1,6 @@
 import time
 import os
-from Compressor import FastOptimizedCompressor
+from Compressor import AdaptiveCompressor
 from CompressorSol import SolCompressor
 from CompressorSolOptimized import ImprovedCompressor
 from FileChecker import FileChecker
@@ -21,15 +21,15 @@ if __name__ == "__main__":
     if args.outputrawfile:
         comp_path    = args.outputrawfile
     else :
-        comp_path    = 'files/out.bin'
+        comp_path    = 'files/outold.bin'
     if args.outputfile:
         reco_path    = args.outputfile
     else :
-        reco_path    = 'files/recovered.txt'
+        reco_path    = 'files/recoveredold.txt'
  
 
     # comp = GolombRiceCompressor()
-    comp = ImprovedCompressor()
+    comp = SolCompressor()
 
 
     # --- Medir compresión ---
