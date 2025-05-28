@@ -1,8 +1,7 @@
 import time
 import os
-from Compressor import FastOptimizedCompressor
 from CompressorSol import SolCompressor
-from CompressorSolOptimized import ImprovedCompressor
+from CompressorFernando import ImprovedCompressor
 from FileChecker import FileChecker
 import argparse
 

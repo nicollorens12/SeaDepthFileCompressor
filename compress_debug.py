@@ -5,6 +5,7 @@ import sys
 import os
 import time
 import lzma
+import tempfile
 from collections import Counter
 
 # Magic header for our LZMA-based compressor
@@ -46,7 +47,6 @@ def zigzag_decode(z: int) -> int:
 
 # Compressor using LZMA on varint-coded deltas
 def compress_file(infile: str, outfile: str) -> None:
-    # Read input heights
     vals = []
     breaks = []
     idx = 0
@@ -59,25 +59,21 @@ def compress_file(infile: str, outfile: str) -> None:
     if not vals:
         raise ValueError("Empty input file")
 
-    # Compute second-order deltas + zigzag
     d1 = [vals[i] - vals[i-1] for i in range(1, len(vals))]
     d2 = [d1[0]] + [d1[i] - d1[i-1] for i in range(1, len(d1))]
     zs = [zigzag_encode(d) for d in d2]
 
-    # Varint encode all zs
     raw = bytearray()
     for z in zs:
         raw.extend(write_varint(z))
 
-    # LZMA compress
     comp = lzma.compress(bytes(raw), preset=9)
 
-    # Write header + metadata + compressed stream
     with open(outfile, 'wb') as out:
         out.write(MAGIC)
-        out.write(struct.pack('<I', len(vals)))      # total values
-        out.write(struct.pack('<i', vals[0]))        # initial height
-        out.write(struct.pack('<I', len(breaks)))    # number of line breaks
+        out.write(struct.pack('<I', len(vals)))
+        out.write(struct.pack('<i', vals[0]))
+        out.write(struct.pack('<I', len(breaks)))
         for b in breaks:
             out.write(struct.pack('<I', b))
         out.write(comp)
@@ -91,19 +87,16 @@ def decompress_file(infile: str, outfile: str) -> None:
         h0 = struct.unpack('<i', inp.read(4))[0]
         nb = struct.unpack('<I', inp.read(4))[0]
         breaks = [struct.unpack('<I', inp.read(4))[0] for _ in range(nb)]
-        # Read the rest as compressed stream
         comp = inp.read()
 
     raw = lzma.decompress(comp)
     from io import BytesIO
     stream = BytesIO(raw)
 
-    # Parse varints back to zs
     zs = []
     while len(zs) < n-1:
         zs.append(read_varint(stream))
 
-    # Invert transforms
     d2 = [zigzag_decode(z) for z in zs]
     d1 = [d2[0]]
     for i in range(1, len(d2)):
@@ -112,19 +105,40 @@ def decompress_file(infile: str, outfile: str) -> None:
     for d in d1:
         vals.append(vals[-1] + d)
 
-    # Write output file preserving line breaks
     with open(outfile, 'w') as out:
         start = 0
         for b in breaks:
             out.write(' '.join(str(x) for x in vals[start:b]) + '\n')
             start = b
 
-# Main function detecting mode by magic
+
+def verify_compression(infile: str, compressed: str) -> None:
+    # Decompress to temporary and compare
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp.close()
+    try:
+        decompress_file(compressed, tmp.name)
+        with open(infile, 'r') as f1, open(tmp.name, 'r') as f2:
+            if f1.read() == f2.read():
+                print("✔️ Verificación: los archivos coinciden")
+            else:
+                print("❌ Verificación: ¡ERROR, los archivos difieren!")
+    finally:
+        os.unlink(tmp.name)
+
+
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python3 compress.py infile outfile")
+    args = sys.argv[1:]
+    verify_flag = False
+    if '--verify' in args:
+        verify_flag = True
+        args.remove('--verify')
+
+    if len(args) != 2:
+        print("Usage: python3 compress.py infile outfile [--verify]")
         sys.exit(1)
-    infile, outfile = sys.argv[1], sys.argv[2]
+    infile, outfile = args
+
     start = time.time()
     try:
         with open(infile, 'rb') as f:
@@ -139,6 +153,8 @@ def main():
     else:
         print("-> Modo compresión")
         compress_file(infile, outfile)
+        if verify_flag:
+            verify_compression(infile, outfile)
     end = time.time()
 
     size_in = os.path.getsize(infile)
