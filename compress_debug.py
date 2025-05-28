@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys, os, time, lzma
+import sys, os, time, lzma, tempfile
 from io import BytesIO
 
 MAGIC = b'BPR1'  # Block Predictor + Range (LZMA) v1
@@ -136,11 +136,11 @@ def decompress_file(infile,outfile):
     # we'll read them after reading all row-lengths?
     # Actually preds are written *after* all blocks in our scheme...
     # So we need a two-pass: read blocks first, store them, then read preds.
+    preds = [ord(f.read(1)) for _ in range(num_rows)]
     blocks=[]
     for _ in range(num_rows):
         bl = read_varint(f)
         blocks.append(f.read(bl))
-    preds = [ord(f.read(1)) for _ in range(num_rows)]
     # reconstruct
     rows=[]; prev=None
     for row_idx,(L,comp,pid) in enumerate(zip(lengths,blocks,preds)):
