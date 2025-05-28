@@ -1,400 +1,215 @@
 #!/usr/bin/env python3
-import struct
-import math
-import sys
-import os
-import time
-import lzma
-import tempfile
+import sys, os, time, lzma
 from io import BytesIO
 
-# Magic header for our 2D Paeth LZMA-based compressor
-MAGIC = b'P2DL'
-FLAG_VARIABLE_LINE_LENGTHS = b'\x00'
-FLAG_UNIFORM_LINE_LENGTHS = b'\x01'
+MAGIC = b'BPR1'  # Block Predictor + Range (LZMA) v1
+P_LEFT  = 0
+P_UP    = 1
+P_PAETH = 2
 
-# Varint encoding/decoding functions
-def write_varint(n: int) -> bytes:
-    out = bytearray()
+def write_varint(n:int)->bytes:
+    out=bytearray()
     while True:
-        to_write = n & 0x7F
-        n >>= 7
-        if n:
-            out.append(to_write | 0x80)
-        else:
-            out.append(to_write)
-            break
+        b=n&0x7F; n>>=7
+        if n: out.append(b|0x80)
+        else: out.append(b); break
     return bytes(out)
 
-def read_varint(stream) -> int:
-    shift = 0
-    result = 0
+def read_varint(f)->int:
+    shift=0; res=0
     while True:
-        b = stream.read(1)
-        if not b:
-            raise EOFError("Unexpected EOF in varint stream")
-        byte = b[0]
-        result |= (byte & 0x7F) << shift
-        if not (byte & 0x80):
-            break
-        shift += 7
-    return result
+        b=f.read(1)
+        if not b: raise EOFError
+        byte=b[0]
+        res |= (byte&0x7F)<<shift
+        if not (byte&0x80): break
+        shift+=7
+    return res
 
-# Zigzag functions
-def zigzag_encode(n: int) -> int:
-    return (n << 1) ^ (n >> 31)
+def paeth(a,b,c):
+    p=a+b-c; pa=abs(p-a); pb=abs(p-b); pc=abs(p-c)
+    if pa<=pb and pa<=pc: return a
+    if pb<=pc: return b
+    return c
 
-def zigzag_decode(z: int) -> int:
-    return (z >> 1) ^ -(z & 1)
+def zigzag_encode(n:int)->int:
+    return (n<<1) ^ (n>>31)
+def zigzag_decode(z:int)->int:
+    return (z>>1) ^ -(z&1)
 
-# Paeth Predictor
-def paeth_predict(a: int, b: int, c: int) -> int:
-    p = a + b - c
-    pa = abs(p - a)
-    pb = abs(p - b)
-    pc = abs(p - c)
-    if pa <= pb and pa <= pc:
-        return a
-    elif pb <= pc:
-        return b
-    else:
-        return c
-
-# Compressor
-def compress_file(infile: str, outfile:str) -> None:
-    data_rows = []
-    with open(infile, 'r') as f:
-        for line in f:
-            stripped_line = line.strip()
-            nums = []
-            if stripped_line:
-                try:
-                    nums = [int(x) for x in stripped_line.split()]
-                except ValueError:
-                    print(f"Warning: Skipping line with non-integer data: '{line.strip()}'", file=sys.stderr)
-                    # nums remains []
-            data_rows.append(nums)
-
-    num_rows = len(data_rows)
-    line_lengths = [len(row) for row in data_rows]
-    
-    _vals_flat = [val for row in data_rows for val in row]
-    actual_total_values = len(_vals_flat)
-
-    with open(outfile, 'wb') as out:
-        out.write(MAGIC)
-        out.write(struct.pack('<I', num_rows))
-
-        if num_rows > 0:
-            first_length = line_lengths[0]
-            are_all_lengths_same = all(l == first_length for l in line_lengths)
-            if are_all_lengths_same:
-                out.write(FLAG_UNIFORM_LINE_LENGTHS)
-                out.write(write_varint(first_length))
-            else:
-                out.write(FLAG_VARIABLE_LINE_LENGTHS)
-                for length in line_lengths:
-                    out.write(write_varint(length))
-        # If num_rows is 0, no length information needs to be written beyond this point.
-
-        if actual_total_values == 0:
-            return
-
-        h0 = _vals_flat[0]
-        out.write(write_varint(zigzag_encode(h0)))
-
-        if actual_total_values == 1:
-            return
-
-        deltas_to_encode = []
-        reconstructed_rows_for_pred = []
-
-        for r, current_actual_row_values in enumerate(data_rows):
-            current_processing_row_for_reconstruction = []
-            prev_reconstructed_full_row = reconstructed_rows_for_pred[r-1] if r > 0 else None
-
-            for c, actual_val in enumerate(current_actual_row_values):
-                if r == 0 and c == 0: # h0
-                    current_processing_row_for_reconstruction.append(actual_val)
-                    continue
-                
-                val_A = current_processing_row_for_reconstruction[c-1] if c > 0 else None
-                val_B = None
-                if prev_reconstructed_full_row and c < len(prev_reconstructed_full_row):
-                    val_B = prev_reconstructed_full_row[c]
-                
-                val_C = None
-                if prev_reconstructed_full_row and c > 0 and (c-1) < len(prev_reconstructed_full_row):
-                    val_C = prev_reconstructed_full_row[c-1]
-
-                pred = 0
-                if val_A is not None and val_B is not None and val_C is not None:
-                    pred = paeth_predict(val_A, val_B, val_C)
-                elif val_A is not None:
-                    pred = val_A
-                elif val_B is not None:
-                    pred = val_B
-                
-                delta = actual_val - pred
-                deltas_to_encode.append(delta)
-                current_processing_row_for_reconstruction.append(actual_val)
-            
-            reconstructed_rows_for_pred.append(current_processing_row_for_reconstruction)
-
-        if deltas_to_encode:
-            raw_deltas_payload = bytearray()
-            for d_val in deltas_to_encode:
-                raw_deltas_payload.extend(write_varint(zigzag_encode(d_val)))
-            
-            if raw_deltas_payload:
-                compressed_deltas = lzma.compress(bytes(raw_deltas_payload), preset=(9 | lzma.PRESET_EXTREME))
-                out.write(compressed_deltas)
-
-# Decompressor
-def decompress_file(infile: str, outfile: str) -> None:
-    with open(infile, 'rb') as inp:
-        if inp.read(4) != MAGIC:
-            raise ValueError(f"Not a {MAGIC.decode()} file or invalid magic number")
-        
-        num_rows = struct.unpack('<I', inp.read(4))[0]
-
-        if num_rows == 0:
-            with open(outfile, 'w') as out:
-                pass 
-            return
-
-        line_lengths = []
-        length_flag = inp.read(1)
-        if length_flag == FLAG_UNIFORM_LINE_LENGTHS:
-            common_length = read_varint(inp)
-            line_lengths = [common_length] * num_rows
-        elif length_flag == FLAG_VARIABLE_LINE_LENGTHS:
-            for _ in range(num_rows):
-                line_lengths.append(read_varint(inp))
-        else:
-            raise ValueError("Invalid line length flag in compressed file")
-        
-        actual_total_values = sum(line_lengths)
-        reconstructed_vals_2d = []
-
-        if actual_total_values == 0:
-            with open(outfile, 'w') as out:
-                for _ in range(num_rows):
-                    out.write('\n')
-            return
-
-        h0 = zigzag_decode(read_varint(inp))
-        
-        decoded_deltas = []
-        num_deltas_to_read = actual_total_values - 1
-
-        if num_deltas_to_read > 0:
-            compressed_deltas_payload = inp.read()
-            if not compressed_deltas_payload:
-                 raise ValueError("Expected delta payload but found none.")
-            
-            raw_deltas_payload = lzma.decompress(compressed_deltas_payload)
-            deltas_stream = BytesIO(raw_deltas_payload)
-            for _ in range(num_deltas_to_read):
-                try:
-                    decoded_deltas.append(zigzag_decode(read_varint(deltas_stream)))
-                except EOFError:
-                    raise ValueError("Delta stream ended prematurely while reading expected deltas.")
-            if deltas_stream.read(1): # Check if there's any data left in the stream
-                 raise ValueError("More data in delta stream than expected.")
-            if len(decoded_deltas) != num_deltas_to_read: # Should be redundant if EOFError and extra data check are robust
-                 raise ValueError(f"Read {len(decoded_deltas)} deltas, expected {num_deltas_to_read}.")
-
-        delta_idx = 0
-        for r in range(num_rows):
-            current_reconstructed_row = []
-            prev_full_row_for_pred = reconstructed_vals_2d[r-1] if r > 0 else None
-            current_row_length = line_lengths[r]
-
-            if current_row_length == 0:
-                reconstructed_vals_2d.append(current_reconstructed_row)
+def select_predictor_for_row(row, prev_row):
+    # Try Left, Up, Paeth, pick minimal sum(abs(delta))
+    sums = [0,0,0]
+    for pid in (P_LEFT,P_UP,P_PAETH):
+        total = 0
+        for i,v in enumerate(row):
+            if prev_row is None and i==0:
                 continue
+            if pid==P_LEFT:
+                pred = row[i-1] if i>0 else 0
+            elif pid==P_UP:
+                pred = prev_row[i] if prev_row and i<len(prev_row) else 0
+            else:
+                a = row[i-1] if i>0 else 0
+                b = prev_row[i] if prev_row and i<len(prev_row) else 0
+                c = prev_row[i-1] if prev_row and i>0 else 0
+                pred=paeth(a,b,c)
+            total += abs(v-pred)
+        sums[pid]=total
+    return min(( (sums[i],i) for i in (P_LEFT,P_UP,P_PAETH) ))[1]
 
-            for c in range(current_row_length):
-                if r == 0 and c == 0:
-                    current_reconstructed_row.append(h0)
-                    continue
+def compress_file(infile,outfile):
+    rows = [ list(map(int,line.split())) for line in open(infile) ]
+    num_rows = len(rows)
+    # Header
+    hdr = bytearray()
+    hdr += MAGIC
+    hdr += write_varint(num_rows)
+    # lengths varint
+    for r in rows:
+        hdr += write_varint(len(r))
+    # Flatten for h0
+    flat = [x for r in rows for x in r]
+    total = len(flat)
+    if total==0:
+        open(outfile,'wb').write(hdr)
+        return
+    # h0
+    h0 = flat[0]
+    hdr += write_varint(zigzag_encode(h0))
+    # We'll store predictor id per row
+    preds = []
+    prev=None
+    # Prepare all compressed blocks
+    blocks = []
+    for row in rows:
+        pid = select_predictor_for_row(row, prev)
+        preds.append(pid)
+        # compute residuals
+        rec=[]; deltas=[]
+        for i,v in enumerate(row):
+            if prev is None and i==0:
+                rec.append(v); continue
+            if pid==P_LEFT:
+                pred = rec[i-1] if i>0 else 0
+            elif pid==P_UP:
+                pred = prev[i] if prev and i<len(prev) else 0
+            else:
+                a = rec[i-1] if i>0 else 0
+                b = prev[i] if prev and i<len(prev) else 0
+                c = prev[i-1] if prev and i>0 else 0
+                pred=paeth(a,b,c)
+            deltas.append(v-pred)
+            rec.append(v)
+        prev=rec
+        # ZigZag+varint encode
+        raw=bytearray()
+        for d in deltas:
+            zd = zigzag_encode(d)
+            raw.extend(write_varint(zd))
+        # Compress this row
+        comp = lzma.compress(bytes(raw), preset=(9|lzma.PRESET_EXTREME))
+        blocks.append(comp)
+    # Append predictor ids
+    for pid in preds:
+        hdr.append(pid)
+    # Now write file
+    with open(outfile,'wb') as f:
+        f.write(hdr)
+        # For each block: length + data
+        for comp in blocks:
+            f.write(write_varint(len(comp)))
+            f.write(comp)
 
-                val_A = current_reconstructed_row[c-1] if c > 0 else None
-                val_B = None
-                if prev_full_row_for_pred and c < len(prev_full_row_for_pred):
-                    val_B = prev_full_row_for_pred[c]
-                
-                val_C = None
-                if prev_full_row_for_pred and c > 0 and (c-1) < len(prev_full_row_for_pred):
-                    val_C = prev_full_row_for_pred[c-1]
-
-                pred = 0
-                if val_A is not None and val_B is not None and val_C is not None:
-                    pred = paeth_predict(val_A, val_B, val_C)
-                elif val_A is not None:
-                    pred = val_A
-                elif val_B is not None:
-                    pred = val_B
-                
-                if delta_idx >= len(decoded_deltas):
-                    raise ValueError(f"Not enough deltas to reconstruct value at row {r}, col {c}.")
-
-                delta = decoded_deltas[delta_idx]
-                delta_idx += 1
-                
-                value = pred + delta
-                current_reconstructed_row.append(value)
-            
-            reconstructed_vals_2d.append(current_reconstructed_row)
-
-    with open(outfile, 'w') as out:
-        for i, row_data in enumerate(reconstructed_vals_2d):
-            out.write(' '.join(str(x) for x in row_data))
-            out.write('\n')
-
-
-def verify_compression(original_infile: str, compressed_file_to_test: str) -> None:
-    fd, tmp_decompressed_name = tempfile.mkstemp(suffix=".txt", text=True)
-    os.close(fd) 
-
-    try:
-        print(f"Verifying: Decompressing {compressed_file_to_test} to {tmp_decompressed_name}")
-        decompress_file(compressed_file_to_test, tmp_decompressed_name)
-        
-        match = True
-        line_num = 0
-        with open(original_infile, 'r') as f1, open(tmp_decompressed_name, 'r') as f2:
-            while True:
-                line_num += 1
-                line1 = f1.readline()
-                line2 = f2.readline()
-                s_line1 = line1.rstrip('\r\n').rstrip() 
-                s_line2 = line2.rstrip('\r\n').rstrip()
-
-                if s_line1 == "" and line1 != "" and s_line2 == "" and line2 != "": 
-                    pass 
-                elif s_line1 != s_line2:
-                    print(f"❌ Mismatch detected at line {line_num}:")
-                    # To help debug, show how the compressor would parse line1
-                    original_line1_parts = []
-                    if line1.strip():
-                        try:
-                            original_line1_parts = line1.strip().split()
-                        except: pass # ignore errors for this debug print
-                    
-                    normalized_s_line1 = ' '.join(original_line1_parts)
-
-                    print(f"Original    : '{s_line1}' (raw: {repr(line1)}) (normalized content: '{normalized_s_line1}')")
-                    print(f"Decompressed: '{s_line2}' (raw: {repr(line2)})")
-                    match = False
-                    break
-                
-                if not line1 and not line2: 
-                    break
-                if not line1: 
-                    print(f"❌ Mismatch: Original file ended, but decompressed has more data (line {line_num}): '{s_line2}'")
-                    match = False
-                    break
-                if not line2: 
-                    print(f"❌ Mismatch: Decompressed file ended, but original has more data (line {line_num}): '{s_line1}'")
-                    match = False
-                    break
-        
-        if match:
-            print("✔️ Verificación: los archivos coinciden")
-        else:
-            print("❌ Verificación: ¡ERROR, los archivos difieren!")
-            
-    except Exception as e:
-        print(f"❌ Verificación: ERROR durante la verificación - {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        if os.path.exists(tmp_decompressed_name):
-            os.unlink(tmp_decompressed_name)
-
+def decompress_file(infile,outfile):
+    f=open(infile,'rb')
+    if f.read(4)!=MAGIC:
+        raise ValueError("Formato inválido")
+    num_rows = read_varint(f)
+    lengths  = [read_varint(f) for _ in range(num_rows)]
+    total = sum(lengths)
+    if total==0:
+        open(outfile,'w').close(); return
+    h0 = zigzag_decode(read_varint(f))
+    # read comp for each row
+    # but first we need predictor ids
+    # we'll read them after reading all row-lengths?
+    # Actually preds are written *after* all blocks in our scheme...
+    # So we need a two-pass: read blocks first, store them, then read preds.
+    blocks=[]
+    for _ in range(num_rows):
+        bl = read_varint(f)
+        blocks.append(f.read(bl))
+    preds = [ord(f.read(1)) for _ in range(num_rows)]
+    # reconstruct
+    rows=[]; prev=None
+    for row_idx,(L,comp,pid) in enumerate(zip(lengths,blocks,preds)):
+        if L==0:
+            rows.append([]); prev=[]
+            continue
+        if row_idx==0: 
+            # first row: h0 + rest deltas
+            rem = lzma.decompress(comp)
+            stream = BytesIO(rem)
+            deltas=[ zigzag_decode(read_varint(stream)) for _ in range(L-1) ]
+            rec=[h0]
+            for d in deltas:
+                rec.append(rec[-1]+d)  # for row0, pred left of rec[-1]
+            rows.append(rec); prev=rec; continue
+        # other rows
+        rem = lzma.decompress(comp)
+        stream = BytesIO(rem)
+        deltas=[ zigzag_decode(read_varint(stream)) for _ in range(L) ]
+        rec=[]; di=0
+        for i in range(L):
+            if i==0:
+                # first element: pred? rec empty => pred= prev[0] for UP? left? you choose
+                # original code wrote no delta for first element; here we do row-based
+                # Simpler: assume d0 is pred=prev[0]
+                pred = prev[0]
+                val = pred + deltas[di]; di+=1
+                rec.append(val)
+            else:
+                if pid==P_LEFT:
+                    pred=rec[i-1]
+                elif pid==P_UP:
+                    pred=prev[i]
+                else:
+                    a=rec[i-1]; b=prev[i]; c=prev[i-1]
+                    pred=paeth(a,b,c)
+                val=pred + deltas[di]; di+=1
+                rec.append(val)
+        rows.append(rec); prev=rec
+    # write text
+    with open(outfile,'w') as out:
+        for r in rows:
+            out.write(' '.join(map(str,r))+'\n')
 
 def main():
-    args = sys.argv[1:]
-    verify_flag = False
-    if '--verify' in args:
-        verify_flag = True
-        args.remove('--verify')
-
-    if len(args) != 2:
-        print("Usage: python3 script_name.py infile outfile [--verify]")
-        print("       python3 script_name.py compressed_file outfile_decompressed")
-        sys.exit(1)
-    
-    infile, outfile_target = args
-
-    start_time = time.time()
-    
-    is_compression_mode = True 
-    try:
-        with open(infile, 'rb') as f_peek:
-            peek_magic = f_peek.read(len(MAGIC))
-        if peek_magic == MAGIC:
-            is_compression_mode = False
-    except FileNotFoundError:
-        print(f"Error: Input file {infile} not found.")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error reading input file {infile}: {e}")
-        sys.exit(1)
-
-    if not is_compression_mode:
-        print(f"-> Modo descompresión (detectado {MAGIC.decode()} en {infile} -> {outfile_target})")
-        decompress_file(infile, outfile_target)
+    args=sys.argv[1:]
+    verify='--verify' in args
+    if verify: args.remove('--verify')
+    if len(args)!=2:
+        print("Uso: compress.py infile outfile [--verify]"); return
+    inp,out = args
+    t0=time.time()
+    data=open(inp,'rb').read(4)
+    if data==MAGIC:
+        print("-> Descomprimiendo")
+        decompress_file(inp,out)
     else:
-        print(f"-> Modo compresión ({infile} -> {outfile_target})")
-        compress_file(infile, outfile_target)
-        if verify_flag:
-            print("--- Iniciando verificación ---")
-            verify_compression(infile, outfile_target) 
-            print("--- Verificación finalizada ---")
-            
-    end_time = time.time()
+        print("-> Comprimiendo")
+        compress_file(inp,out)
+        if verify:
+            tmp=tempfile.mktemp()
+            decompress_file(out,tmp)
+            ok = open(inp).read()==open(tmp).read()
+            print("✔️ Verificado" if ok else "❌ Mismatch")
+            os.remove(tmp)
+    dt=time.time()-t0
+    si=os.path.getsize(inp)/1024
+    so=os.path.getsize(out)/1024 if os.path.exists(out) else 0
+    print(f"Time: {dt:.2f}s In:{si:.2f}kB Out:{so:.2f}kB Ratio:{si/so:.2f}x")
 
-    size_in = 0
-    if os.path.exists(infile):
-        size_in = os.path.getsize(infile)
-    
-    size_out = 0
-    if os.path.exists(outfile_target):
-        size_out = os.path.getsize(outfile_target)
-    
-    elapsed = end_time - start_time
-    
-    speed = 0
-    if elapsed > 0 and size_in > 0 :
-        speed = (size_in / 1024) / elapsed 
-
-    print(f"- Tiempo: {elapsed:.3f} s")
-    print(f"- Tamaño entrada: {size_in/1024:.2f} kB")
-
-    if os.path.exists(outfile_target):
-        print(f"- Tamaño salida: {size_out/1024:.2f} kB")
-        if is_compression_mode:
-            if size_out > 0:
-                print(f"- Ratio de compresión: {size_in/size_out:.2f}x")
-            elif size_in == 0 : # Input was 0 bytes, output likely 0 or very small (header for 0 rows)
-                 print("- Ratio de compresión: N/A (entrada vacía)")
-            else: # Output is 0 bytes from a non-empty input (should not happen with current logic)
-                print("- Ratio de compresión: N/A (salida vacía, error?)")
-    else:
-        # This implies an error if outfile_target was expected to be created
-        print(f"- Tamaño salida: N/A (fichero no creado, posible error en {'compresión' if is_compression_mode else 'descompresión'})")
-
-
-    if speed > 0:
-        if is_compression_mode:
-            print(f"- Velocidad: {speed:.2f} kB/s (basado en tamaño de entrada original)")
-        else: 
-            print(f"- Velocidad: {speed:.2f} kB/s (basado en tamaño de entrada comprimido)")
-    else:
-        print(f"- Velocidad: N/A")
-
-if __name__ == '__main__':
+if __name__=='__main__':
     main()
