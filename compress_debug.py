@@ -4,7 +4,7 @@ from io import BytesIO
 
 MAGIC = b'BPR5'
 BLOCK_SIZE = 8
-P_LEFT, P_UP, P_PAETH = 0, 1, 2
+P_LEFT, P_UP, P_PAETH, P_MED = 0, 1, 2, 3
 
 def write_varint(n:int)->bytes:
     out=bytearray()
@@ -31,6 +31,11 @@ def paeth(a,b,c):
     if pb<=pc: return b
     return c
 
+def med(a,b,c):
+    if c >= max(a, b): return min(a, b)
+    elif c <= min(a, b): return max(a, b)
+    else: return a + b - c
+
 def zigzag_encode(n:int)->int:
     return (n<<1) ^ (n>>31)
 
@@ -38,8 +43,8 @@ def zigzag_decode(z:int)->int:
     return (z>>1) ^ -(z&1)
 
 def select_predictor_for_row(row, prev_row):
-    sums = [0, 0, 0]
-    for pid in (P_LEFT, P_UP, P_PAETH):
+    sums = [0, 0, 0, 0]
+    for pid in (P_LEFT, P_UP, P_PAETH, P_MED):
         total = 0
         for i,v in enumerate(row):
             if prev_row is None and i == 0:
@@ -48,14 +53,19 @@ def select_predictor_for_row(row, prev_row):
                 pred = row[i-1] if i>0 else 0
             elif pid==P_UP:
                 pred = prev_row[i] if prev_row and i<len(prev_row) else 0
+            elif pid==P_PAETH:
+                a = row[i-1] if i>0 else 0
+                b = prev_row[i] if prev_row and i<len(prev_row) else 0
+                c = prev_row[i-1] if prev_row and i>0 else 0
+                pred = paeth(a,b,c)
             else:
                 a = row[i-1] if i>0 else 0
                 b = prev_row[i] if prev_row and i<len(prev_row) else 0
                 c = prev_row[i-1] if prev_row and i>0 else 0
-                pred=paeth(a,b,c)
+                pred = med(a,b,c)
             total += abs(v-pred)
         sums[pid]=total
-    return min(( (sums[i],i) for i in (P_LEFT,P_UP,P_PAETH) ))[1]
+    return min(( (sums[i],i) for i in (P_LEFT,P_UP,P_PAETH,P_MED) ))[1]
 
 def delta1(row, rec, prev, pid):
     deltas = []
@@ -67,11 +77,16 @@ def delta1(row, rec, prev, pid):
             pred = rec[j-1] if j > 0 else 0
         elif pid == P_UP:
             pred = prev[j] if prev and j < len(prev) else 0
-        else:
+        elif pid == P_PAETH:
             a = rec[j-1] if j > 0 else 0
             b = prev[j] if prev and j < len(prev) else 0
             c = prev[j-1] if prev and j > 0 else 0
             pred = paeth(a,b,c)
+        else:
+            a = rec[j-1] if j > 0 else 0
+            b = prev[j] if prev and j < len(prev) else 0
+            c = prev[j-1] if prev and j > 0 else 0
+            pred = med(a,b,c)
         delta = v - pred
         deltas.append(delta)
         rec.append(v)
@@ -88,8 +103,10 @@ def delta2(row, rec, prev, pid):
                 pred = 0
             elif pid == P_UP:
                 pred = prev[j] if prev and j < len(prev) else 0
-            else:
+            elif pid == P_PAETH:
                 pred = paeth(0, prev[j] if prev and j < len(prev) else 0, 0)
+            else:
+                pred = med(0, prev[j] if prev and j < len(prev) else 0, 0)
             val = v
             delta = val - pred
             rec.append(val)
@@ -222,8 +239,12 @@ def decompress_file(infile, outfile):
                                 pred = rec[j - 1]
                             elif pid == P_UP:
                                 pred = prev[j]
-                            else:
+                            elif pid == P_PAETH:
                                 pred = paeth(rec[j - 1], prev[j], prev[j - 1])
+                            elif pid == P_MED:
+                                pred = med(rec[j - 1], prev[j], prev[j - 1])
+                            else:
+                                raise ValueError(f"Predictor desconocido: {pid}")
                         rec.append(pred + d)
                     else:
                         if j == 0:
@@ -231,8 +252,12 @@ def decompress_file(infile, outfile):
                                 pred = 0
                             elif pid == P_UP:
                                 pred = prev[j]
-                            else:
+                            elif pid == P_PAETH:
                                 pred = paeth(0, prev[j], 0)
+                            elif pid == P_MED:
+                                pred = med(0, prev[j], 0)
+                            else:
+                                raise ValueError(f"Predictor desconocido: {pid}")
                             rec.append(pred + d)
                         elif j == 1:
                             rec.append(rec[j - 1] + d)
@@ -245,6 +270,7 @@ def decompress_file(infile, outfile):
     with open(outfile, 'w') as out:
         for r in rows:
             out.write(' '.join(map(str, r)) + '\n')
+
 
 def main():
     args = sys.argv[1:]
