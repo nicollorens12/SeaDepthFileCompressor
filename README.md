@@ -1,60 +1,46 @@
-# Compresor sin pérdidas — PracticaCDI (lab_33)
+# BPR5: Compresión sin pérdidas para datos de alturas sobre el nivel del mar
 
-Este script `compress.py` permite **comprimir** y **descomprimir** archivos de texto con datos de alturas sobre el nivel del mar.
+[![en](https://img.shields.io/badge/language-en-blue.svg)](README.en.md)
 
-## Uso
+El script `compress.py` implementa un pipeline de compresión sin pérdidas específicamente creado para comprimir secuencias de datos de alturas sobre el nivel del mar (disponibles en `files/`).
 
-```bash
-python3 compress.py infile outfile
-````
+El pipeline consiste en un preprocesado por bloques (predicción por filas + codificación delta), transformación ZigZag, codificación variable (varint), y compresión final con LZMA.
 
-El script **detecta automáticamente** si el archivo de entrada está comprimido leyendo su cabecera:
+El documento `report.pdf` describe el proceso con más detalle.
 
-* Si el archivo comienza con la firma `ENHC`, se **descomprime**.
-* En caso contrario, se **comprime**.
-
-## Ejemplos
-
-```bash
-# Comprimir
-python3 compress.py files/file11111.txt files/compressed.bin
-
-# Descomprimir
-python3 compress.py files/compressed.bin files/recovered.txt
-```
-
-## Salida por terminal
-
-El script imprime al ejecutarse:
-
-* Modo seleccionado (compresión o descompresión).
-* Tiempo de ejecución.
-* Tamaños de entrada y salida.
-* **Ratio de compresión** (solo en modo compresión).
-* **Velocidad de procesamiento** en kB/s.
-
-### Ejemplo de salida en compresión:
-
-```
--> Modo compresión
-- Compresión completada en 34.64 s
-- Tamaño original:   165083.86 kB
-- Tamaño comprimido: 21433.07 kB
-- Ratio de compresión: 7.70x
-- Velocidad: 4765.07 kB/s
-```
-
-### Ejemplo de salida en descompresión:
-
-```
--> Modo descompresión
-- Descompresión completada en 39.92 s
-- Tamaño comprimido: 21433.07 kB
-- Tamaño recuperado: 165083.86 kB
-- Velocidad: 536.88 kB/s
-```
+> Este trabajo es parte de la asignatura de Compresión de Datos e Imágenes (CDI) de la FIB-UPC en el cuatrimestre de primavera del curso 2024-2025. Realizado por Sol Torralba, Fernando Guirao y Nico Llorens.
 
 ## Requisitos
 
-* Python 3 (probado en entorno Linux FIB).
-* No se necesitan librerías externas.
+Hemos trabajado con la versión 3.13 de Python, pero no son necesarios paquetes fuera de la librería estándar.
+
+## Uso
+
+Para comprimir un archivo:
+
+```
+python3 compress.py archivo_entrada.txt archivo_salida.bin
+```
+
+Para descomprimir:
+
+```
+python3 compress.py archivo_comprimido.bin archivo_salida.txt
+```
+
+Para verificar que la compresión y descompresión mantienen los datos intactos:
+
+```
+python3 compress.py archivo_entrada.txt archivo_salida.bin --verify
+```
+
+El script detecta automáticamente si el archivo de entrada está comprimido.
+
+## Ratios de compresión obtenidos
+
+| Fichero            | Ratio de compresión |
+|--------------------|---------------------|
+| file11111.txt      | 8.44x               |
+| file22222.txt      | 10.18x              |
+| file21212.txt      | 9.12x               |
+| file22121.txt      | 10.25x              |
