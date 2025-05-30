@@ -137,6 +137,9 @@ def compress_file(infile, outfile):
     h0 = flat[0]
     hdr += write_varint(zigzag_encode(h0))
 
+    predictor_counts = {P_LEFT: 0, P_UP: 0, P_PAETH: 0, P_MED: 0}
+    delta_mode_counts = {0: 0, 1: 0}
+
     blocks = []
     preds_all = []
     modes_all = []
@@ -149,6 +152,7 @@ def compress_file(infile, outfile):
         for row in block_rows:
             pid = select_predictor_for_row(row, prev)
             preds.append(pid)
+            predictor_counts[pid] += 1
 
             rec1, rec2 = [], []
             d1 = delta1(row, rec1, prev, pid)
@@ -160,10 +164,12 @@ def compress_file(infile, outfile):
                 deltas = d1
                 rec = rec1
                 modes.append(0)
+                delta_mode_counts[0] += 1
             else:
                 deltas = d2
                 rec = rec2
                 modes.append(1)
+                delta_mode_counts[1] += 1
 
             for d in deltas:
                 encoded.extend(write_varint(zigzag_encode(d)))
@@ -183,6 +189,9 @@ def compress_file(infile, outfile):
         for comp in blocks:
             f.write(write_varint(len(comp)))
             f.write(comp)
+
+    print("Uso de predictores:", predictor_counts)
+    print("Uso de modos de delta:", delta_mode_counts)
 
 def decompress_file(infile, outfile):
     f = open(infile, 'rb')
