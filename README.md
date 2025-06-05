@@ -44,3 +44,7 @@ El script detecta automáticamente si el archivo de entrada está comprimido.
 | file22222.txt      | 10.18x              |
 | file21212.txt      | 9.12x               |
 | file22121.txt      | 10.25x              |
+
+Con una compressión media de 9.25752
+
+Obteniendo la posición 4 de 25 grupos (top1 obtuvo una compresión 9.91904).
